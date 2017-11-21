@@ -1,0 +1,1486 @@
+---
+title: "Data Exploration and Modeling"
+author: "Maggie Manna"
+date: "12/11/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NA, warning = FALSE, message = FALSE, fig.align="center")
+knitr::opts_knit$set(root.dir = '/Users/az01661/Dropbox/3 Data Science Specialization/NLP Predicting Next Word in Text')
+```
+
+
+# Getting and Cleaning Data
+
+
+We load only samples of data.
+
+For this notebook, we read a sample of 5,000 lines of data only by subject.
+
+```{r}
+n <- 5000
+
+con1 <- file("final/en_US/en_US.blogs.txt", open = "r")
+con2 <- file("final/en_US/en_US.news.txt", open = "r")
+con3 <- file("final/en_US/en_US.twitter.txt", open = "r")
+
+
+readLinesSampled <- function(con, n) {
+  texts <- readLines(con, n)
+  
+  k <- n
+  
+  while (length(curline <- readLines(con, 1))) {
+    k <- k + 1
+    if (runif(1) < n/k) {
+      texts[sample(n, 1)] <- curline
+    }
+  }
+  
+  close(con)
+  return(texts)
+}
+
+set.seed(251017)
+blogs <- readLinesSampled(con1, n)
+set.seed(251017)
+news <- readLinesSampled(con2, n)
+set.seed(251017)
+twitter <- readLinesSampled(con3, n)
+```
+
+We will use the library tm to perform some text mining
+
+```{r}
+library(tm)
+
+corpus <- c(blogs, news, twitter)
+
+rm(twitter);
+rm(blogs);
+rm(news);
+
+corpus <- VCorpus(VectorSource(corpus))
+```
+
+### Corpus Preprocessing 
+
+Preprocessing includes:
+  
+    * Removing numbers
+    * Removing Punctuations
+    * Transforming all words into lowercases
+
+```{r}
+corpus<-tm_map(corpus, removeNumbers)
+
+corpus<-tm_map(corpus, removePunctuation, preserve_intra_word_dashes = TRUE)
+
+corpus<-tm_map(corpus, content_transformer(tolower))
+```
+
+* In this types of problems, we don't want to remove stopwords.
+* In this types of applications, we can't to stem.
+
+We need to remove profanity words, so that we don't predict them and show them to users.
+A list of these words can be found online. The url is indicated in the code.
+
+### Profanity Filtering
+
+```{r}
+getProfanityWords <- function() {
+  profanityFileName <- "profanity.txt"
+  if (!file.exists(profanityFileName)) {
+    profanity.url <- "https://raw.githubusercontent.com/shutterstock/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/master/en"
+    download.file(profanity.url, destfile = profanityFileName, method = "curl")
+  }
+  if (sum(ls() == "profanity") < 1) {
+    ProfanityWords <- readLines(profanityFileName)
+  }
+  return(ProfanityWords)
+}
+
+corpus <- tm_map(corpus, removeWords, getProfanityWords())
+
+corpus <- tm_map(corpus, stripWhitespace)
+```
+
+
+# Exploratory Data Analysis
+
+### Filter non-english texts
+
+```{r}
+corpus.df <- data.frame(rawtext = sapply(corpus, as.character), stringsAsFactors=FALSE)
+
+sample(corpus.df$rawtext,10,replace=FALSE)
+
+rm(corpus)
+```
+
+
+Package cldr from http://cran.r-project.org/web/packages/cldr/  brings Google Chrome's language detection to R.
+
+```{r}
+# url <- "http://cran.us.r-project.org/src/contrib/Archive/cldr/cldr_1.1.0.tar.gz"
+# pkgFile<-"cldr_1.1.0.tar.gz"
+# download.file(url = url, destfile = pkgFile)
+# install.packages(pkgs=pkgFile, type="source", repos=NULL)
+# unlink(pkgFile)
+```
+
+
+```{r}
+library(dplyr)
+library(cldr)
+
+corpus.df <- corpus.df %>%
+  mutate(language = detectLanguage(rawtext)$detectedLanguage)
+
+sum(corpus.df$language == "ENGLISH")
+sum(corpus.df$language != "ENGLISH")
+```
+
+Let's check some of the non-english detected texts
+
+```{r}
+knitr::kable(sample_n(filter(corpus.df, language != "ENGLISH"), 20))
+```
+
+Using textcat library, we can notice too many misclassifications.
+
+```{r}
+library(textcat)
+
+corpus.df <- corpus.df %>%
+  mutate(language2 = textcat(rawtext))
+
+sum(corpus.df$language2 == "english", na.rm = T)
+sum(corpus.df$language2 != "english", na.rm = T)
+sum(is.na(corpus.df$language2))
+```
+
+Let's check some of the non-english detected texts
+
+```{r}
+set.seed(31102017)
+knitr::kable(sample_n(filter(select(corpus.df, -language), language2 != "english"), 20))
+```
+
+Many english texts were misclassified as non-english.
+
+We will eliminate non-english texts using the cldr package instead.
+
+```{r}
+corpus.df <- corpus.df %>%
+  filter(language == "ENGLISH") %>%
+  select(rawtext)
+```
+
+### Distributions of word frequencies
+
+```{r}
+library(SnowballC)
+library(wordcloud)
+library(RColorBrewer)
+library(dplyr)
+```
+
+We can generate the Word cloud.
+
+The importance of words can be illustrated as a word cloud as follow :
+
+```{r}
+library(RWeka)
+
+ngram.1 <- data.frame(table(NGramTokenizer(corpus.df, Weka_control(min=1, max=1))));
+
+names(ngram.1)[names(ngram.1)=='Var1']<-'Word';
+
+ngram.1 <- ngram.1[order(ngram.1$Freq, decreasing = TRUE),] 
+
+wordcloud(words = ngram.1$Word, freq = ngram.1$Freq, min.freq = 1,
+          max.words=300, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+
+barplot(ngram.1[1:50,]$Freq, las = 2, names.arg = ngram.1[1:50,]$Word,
+        col ="lightblue", main ="Most frequent words",
+        ylab = "Word frequencies")
+
+
+
+ngram.2 <- data.frame(table(NGramTokenizer(corpus.df, Weka_control(min=2, max=2))));
+
+names(ngram.2)[names(ngram.2)=='Var1']<-'Word';
+
+ngram.2 <- ngram.2[order(ngram.2$Freq, decreasing = TRUE),] 
+
+wordcloud(words = ngram.2$Word, freq = ngram.2$Freq, min.freq = 1,
+          max.words=300, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+
+barplot(ngram.2[1:50,]$Freq, las = 2, names.arg = ngram.2[1:50,]$Word,
+        col ="lightblue", main ="Most frequent words",
+        ylab = "Word frequencies")
+
+
+ngram.3 <- data.frame(table(NGramTokenizer(corpus.df, Weka_control(min=3, max=3))))
+
+names(ngram.3)[names(ngram.3)=='Var1']<-'Word';
+
+ngram.3 <- ngram.3[order(ngram.3$Freq, decreasing = TRUE),] 
+
+wordcloud(words = ngram.3$Word, freq = ngram.3$Freq, min.freq = 1,
+          max.words=150, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+
+barplot(ngram.3[1:50,]$Freq, las = 2, names.arg = ngram.3[1:50,]$Word,
+        col ="lightblue", main ="Most frequent words",
+        ylab = "Word frequencies")
+```
+
+
+### Word Dictionary
+
+```{r}
+words.dictionary <- ngram.1 %>%
+  mutate(Freq_cumsum = cumsum(Freq)) %>%
+  mutate(Dictionary_perc = Freq_cumsum/sum(Freq))
+```
+
+### Number of words that form 50% of the dictionary  
+
+```{r}
+n_words_50 <- words.dictionary %>%
+  group_by(Dictionary_perc >= 0.5) %>%
+  mutate(Cut = first(Dictionary_perc)) %>%
+  ungroup() %>%
+  mutate(Cut = max(Cut)) %>%
+  filter(Dictionary_perc <= Cut) %>%
+  select(Word, Freq, Dictionary_perc) 
+```
+
+
+```{r}
+words_50 <- as.character(n_words_50$Word)
+
+length(words_50)
+
+words_50
+```
+
+
+### Number of words forming 90% of the dictionary
+
+```{r}
+n_words_90 <- words.dictionary %>%
+  group_by(Dictionary_perc >= 0.9) %>%
+  mutate(Cut = first(Dictionary_perc)) %>%
+  ungroup() %>%
+  mutate(Cut = max(Cut)) %>%
+  filter(Dictionary_perc <= Cut) %>%
+  select(Word, Freq, Dictionary_perc) 
+
+words_90 <- as.character(n_words_90$Word)
+
+length(words_90)
+```
+
+# Modeling
+
+We need to divide our corpus into training and testing sets.
+We almost have 15000 lines in the corpus.
+We'll use 14000 of them for training, and the rest for testing.
+
+```{r}
+require(reshape)
+library(RWeka)
+
+corpus.df <- sample_n(corpus.df, size = nrow(corpus.df), replace = F)
+
+train.df <- corpus.df[1:14000, ]
+test.df <- corpus.df[14001:nrow(corpus.df), ]
+
+# writeLines(test.df, 'final/testset.txt')
+
+generateNgramData <- function(n, corpus = train.df){
+  ngram <- data.frame(table(NGramTokenizer(corpus, Weka_control(min=n, max=n))))
+  names(ngram)[names(ngram)=='Var1']<-'Word';
+  ngram <- ngram[order(ngram$Freq, decreasing = TRUE),] 
+  
+  if(n == 2) columns <- c('one', 'two')
+  if(n == 3) columns <- c('one', 'two', 'three')
+  if(n == 4) columns <- c('one', 'two', 'three', 'four')
+  
+  if(n > 1) {
+    ngram <- transform(ngram, Word = colsplit(Word, split = " ", names = columns ))
+  }
+  
+  rownames(ngram) <- NULL
+  ngram
+}
+
+ngram.1 <- generateNgramData(1)
+ngram.2 <- generateNgramData(2)
+ngram.3 <- generateNgramData(3)
+ngram.4 <- generateNgramData(4)
+```
+
+Out of the selected 15000 lines in the corpus,
+
+The number of unigrams (tokens) is
+
+```{r}
+nrow(ngram.1)
+```
+
+The number of bigrams (tokens) is
+
+```{r}
+nrow(ngram.2)
+```
+
+The number of trigrams (tokens) is
+
+```{r}
+nrow(ngram.3)
+```
+
+
+We need to perform some transformations on column namess
+
+```{r}
+ngram.2 <- transform(ngram.2, Wordone = Word$one, Wordtwo = Word$two, Word = NULL)
+ngram.3 <- transform(ngram.3, Wordone = Word$one, Wordtwo = Word$two, Wordthree = Word$three, Word = NULL)
+ngram.4 <- transform(ngram.4, Wordone = Word$one, Wordtwo = Word$two, Wordthree = Word$three, Wordfour = Word$four, Word = NULL)
+```
+
+# Simple Back-off Model
+
+### The Algorithm:
+
+A simple quadgram backoff modeling approach, trained on this collection of ngrams, was used to predict a subsequent word.
+With this approach, a subsequent word is predicted by using progressively shorter histories.
+For example, let’s say you type “I love the” in order to see what the next predicted word is.
+
+If the model contains a number of words that follow “I love the”, the most frequent terms are suggested.
+
+If the model does not contain any words that follow “I love the”,
+the first word of the term is backed-off so that the model searches for words that follow “love the”.
+
+If no words exist, the model searches for the most frequent word that follows “the”.
+
+
+```{r}
+ngram.2 <- ngram.2 %>%
+  group_by(Wordone) %>%
+  arrange(Wordone, desc(Freq)) %>%
+  ungroup()
+
+ngram.3 <- ngram.3 %>%
+  group_by(Wordone, Wordtwo) %>%
+  arrange(Wordone, Wordtwo, desc(Freq)) %>%
+  ungroup()
+
+ngram.4 <- ngram.4 %>%
+  group_by(Wordone, Wordtwo, Wordthree) %>%
+  arrange(Wordone, Wordtwo, Wordthree, desc(Freq)) %>%
+  ungroup()
+
+
+unigramsearch <- function(nb_words = 5, remove_words = "") {
+  next_words <-  ngram.1 %>% 
+    filter(!(Word %in% remove_words)) %>%
+    filter(row_number() <= nb_words) %>%
+    select(Word)
+  
+  next_words <- as.vector(next_words$Word)
+  next_words
+}
+
+bigramsearch <- function(word1, nb_words = 5, remove_words = "") {
+  next_words <- ngram.2 %>% 
+    filter(Wordone == word1) %>% 
+    select(Wordtwo) %>%
+    filter(!(Wordtwo %in% remove_words)) %>%
+    filter(row_number() <= nb_words)
+  
+  next_words <- as.vector(next_words$Wordtwo)
+  
+  if(length(next_words) < nb_words)
+    next_words <- c(next_words, unigramsearch(nb_words - length(next_words), next_words))
+  
+  next_words
+}
+
+trigramsearch <- function(word1, word2, nb_words = 5, remove_words = "") {
+  next_words <- ngram.3 %>% 
+    filter(Wordone == word1, Wordtwo == word2) %>% 
+    select(Wordthree) %>%
+    filter(!(Wordthree %in% remove_words)) %>%
+    filter(row_number() <= nb_words)
+  
+  next_words <- as.vector(next_words$Wordthree)
+  
+  if(length(next_words) < nb_words)
+    next_words <- c(next_words, bigramsearch(word2, nb_words - length(next_words), next_words))
+  
+  next_words
+}
+
+fourgramsearch <- function(word1, word2, word3, nb_words = 5, remove_words = "") {
+  next_words <- ngram.4 %>% 
+    filter(Wordone == word1, 
+           Wordtwo == word2,
+           Wordthree == word3) %>%
+    select(Wordfour) %>%
+    filter(!(Wordfour %in% remove_words)) %>%
+    filter(row_number() <= nb_words)
+  
+  next_words <- as.vector(next_words$Wordfour)
+  
+  if(length(next_words) < nb_words)
+    next_words <- c(next_words, trigramsearch(word2, word3, nb_words - length(next_words), next_words))
+                    
+  next_words
+}
+
+
+Predictor <- function(text_input) {
+  
+  # if(nchar(text_input) > 0) {
+    
+    corpus_input <- VCorpus(VectorSource(text_input))
+    
+    corpus_input<-tm_map(corpus_input, removeNumbers)
+    
+    corpus_input<-tm_map(corpus_input, removePunctuation, preserve_intra_word_dashes = TRUE)
+    
+    corpus_input<-tm_map(corpus_input, content_transformer(tolower))
+    
+    text_input <- sapply(corpus_input, as.character)
+    
+    text_input_list = strsplit(text_input, " ")[[1]]
+    
+    # Predicting first word
+    if(length(text_input_list) == 0){
+      # We use unigrams to predict the next word
+      next_words <- unigramsearch()
+    }
+    
+    if(length(text_input_list) == 1){
+      # We use bigrams to predict the next word
+      next_words <- bigramsearch(text_input_list[1])
+    }
+    
+    if(length(text_input_list) == 2){
+      # We use trigrams to predict the next word
+      next_words <- trigramsearch(text_input_list[1], text_input_list[2])
+    } 
+    
+    if(length(text_input_list) >= 3){
+      # We use 4 grams to predict the next word
+      n = length(text_input_list)
+      next_words <- fourgramsearch(text_input_list[n-2], text_input_list[n-1], text_input_list[n])
+    }    
+    
+    next_words <- as.vector(next_words)
+    next_words
+  # }
+}
+
+
+# dir.create("SimpleBackOffModel")
+# 
+# save(ngram.1, ngram.2, ngram.3, ngram.4, file = "SimpleBackOffModel/data.Rdata")
+# 
+# dump(list = c("Predictor", "unigramsearch", "bigramsearch", "trigramsearch", "fourgramsearch"), file = "SimpleBackOffModel/Predictor.R")
+```
+
+### Examples
+
+```{r}
+Predictor("you are so")
+Predictor("a lot of")
+Predictor("one of the")
+Predictor("out of the")
+Predictor("as well as")
+Predictor("going to be")
+Predictor("the united states")
+Predictor("thanks for the")
+Predictor("it would be")
+Predictor("some of the")
+```
+
+# Optimized Simple Back-off Model
+
+### The Algorithm:
+
+Keep only the First 5 most powerful predictions in the sample.
+This will help reduce significantly the size of the ngrams data.frames.
+
+```{r}
+ngram.1.sample <- ngram.1 %>%
+  arrange(desc(Freq)) %>%
+  filter(row_number() <= 5) %>%
+  ungroup()
+
+ngram.2.sample <- ngram.2 %>%
+  group_by(Wordone) %>%
+  arrange(Wordone, desc(Freq)) %>%
+  filter(row_number() <= 5) %>%
+  ungroup()
+
+ngram.3.sample <- ngram.3 %>%
+  group_by(Wordone, Wordtwo) %>%
+  arrange(Wordone, Wordtwo, desc(Freq)) %>%
+  filter(row_number() <= 5) %>%
+  ungroup()
+
+ngram.4.sample <- ngram.4 %>%
+  group_by(Wordone, Wordtwo, Wordthree) %>%
+  arrange(Wordone, Wordtwo, Wordthree, desc(Freq)) %>%
+  filter(row_number() <= 5) %>%
+  ungroup()
+
+
+unigramsearch <- function(nb_words = 5, remove_words = "") {
+  next_words <-  ngram.1.sample %>% 
+    filter(!(Word %in% remove_words)) %>%
+    filter(row_number() <= nb_words) %>%
+    select(Word)
+  
+  next_words <- as.vector(next_words$Word)
+  next_words
+}
+
+bigramsearch <- function(word1, nb_words = 5, remove_words = "") {
+  next_words <- ngram.2.sample %>% 
+    filter(Wordone == word1) %>% 
+    select(Wordtwo) %>%
+    filter(!(Wordtwo %in% remove_words)) %>%
+    filter(row_number() <= nb_words)
+  
+  next_words <- as.vector(next_words$Wordtwo)
+  
+  if(length(next_words) < nb_words)
+    next_words <- c(next_words, unigramsearch(nb_words - length(next_words), next_words))
+  
+  next_words
+}
+
+trigramsearch <- function(word1, word2, nb_words = 5, remove_words = "") {
+  next_words <- ngram.3.sample %>% 
+    filter(Wordone == word1, Wordtwo == word2) %>% 
+    select(Wordthree) %>%
+    filter(!(Wordthree %in% remove_words)) %>%
+    filter(row_number() <= nb_words)
+  
+  next_words <- as.vector(next_words$Wordthree)
+  
+  if(length(next_words) < nb_words)
+    next_words <- c(next_words, bigramsearch(word2, nb_words - length(next_words), next_words))
+  
+  next_words
+}
+
+fourgramsearch <- function(word1, word2, word3, nb_words = 5, remove_words = "") {
+  next_words <- ngram.4.sample %>% 
+    filter(Wordone == word1, 
+           Wordtwo == word2,
+           Wordthree == word3) %>%
+    select(Wordfour) %>%
+    filter(!(Wordfour %in% remove_words)) %>%
+    filter(row_number() <= nb_words)
+  
+  next_words <- as.vector(next_words$Wordfour)
+  
+  if(length(next_words) < nb_words)
+    next_words <- c(next_words, trigramsearch(word2, word3, nb_words - length(next_words), next_words))
+  
+  next_words
+}
+
+
+
+Predictor <- function(text_input) {
+  
+  # if(nchar(text_input) > 0) {
+    
+    corpus_input <- VCorpus(VectorSource(text_input))
+    
+    corpus_input<-tm_map(corpus_input, removeNumbers)
+    
+    corpus_input<-tm_map(corpus_input, removePunctuation, preserve_intra_word_dashes = TRUE)
+    
+    corpus_input<-tm_map(corpus_input, content_transformer(tolower))
+    
+    text_input <- sapply(corpus_input, as.character)
+    
+    text_input_list = strsplit(text_input, " ")[[1]]
+    
+    # Predicting first word
+    if(length(text_input_list) == 0){
+      # We use unigrams to predict the next word
+      next_words <- unigramsearch()
+    }
+    
+    if(length(text_input_list) == 1){
+      # We use bigrams to predict the next word
+      next_words <- bigramsearch(text_input_list[1])
+    }
+    
+    if(length(text_input_list) == 2){
+      # We use trigrams to predict the next word
+      next_words <- trigramsearch(text_input_list[1], text_input_list[2])
+    } 
+    
+    if(length(text_input_list) >= 3){
+      # We use 4 grams to predict the next word
+      n = length(text_input_list)
+      next_words <- fourgramsearch(text_input_list[n-2], text_input_list[n-1], text_input_list[n])
+    }    
+    
+    next_words <- as.vector(next_words)
+    next_words
+  # }
+}
+
+
+# dir.create("SimpleBackOffModelOptimized")
+# 
+# save(ngram.1.sample, ngram.2.sample, ngram.3.sample, ngram.4.sample, file = "SimpleBackOffModelOptimized/data.Rdata")
+# 
+# dump(list = c("Predictor", "unigramsearch", "bigramsearch", "trigramsearch", "fourgramsearch"), file = "SimpleBackOffModelOptimized/Predictor.R")
+```
+
+### Examples
+
+```{r}
+Predictor("you are so")
+Predictor("a lot of")
+Predictor("one of the")
+Predictor("out of the")
+Predictor("as well as")
+Predictor("going to be")
+Predictor("the united states")
+Predictor("thanks for the")
+Predictor("it would be")
+Predictor("some of the")
+```
+
+# Katz's BackOff Model
+
+Katz's BackOff Model is useful in N-gram language modeling to estimate the conditional probability of a word,
+given its history (actually, its preceding words, normally 2-3-4 words).
+The problem is that the corpus for training must be large to cover as much the diversity of language as possible.
+Nevertheless, there are cases where "large" is not "large enough".
+Katz's approach is to fall back to lower-order N-gram in this case.
+
+However, one cannot just fall back like this because this naive approach is unfair.
+Let's say: A-B-C appears 15 times, while A-B-? totally appear 100 times. As a result, Probability(A-B-C|A-B) = 15%.
+But A-B-N does not appear, so we fall back to B-N and similarly, find that Probability(B-N|B) = 40%.
+It is unfair because "A-B" gives more context than just "B", but it is NOT chosen!
+
+Katz fixes this issue by redistributing some probability of high-order N-gram to lower-order N-gram,
+so that all of the probabilities accumulate to 1. But first we have to reap some probability of the high-order N-gram,
+making it available to lower-order N-gram. It is done by using Good-Turing Discounting.
+
+After having some left-over probability for lower-order N-gram, we distribute it fairly.
+That is, in the lower-order N-gram,
+the N-grams who have more probability to appear will have more share in this left-over probability.
+
+The Katz's approach makes sense.
+
+This model generally works well in practice, but fails in some circumstances.
+For example, suppose that the bigram "a b" and the unigram "c" are very common,
+but the trigram "a b c" is never seen. Since "a b" and "c" are very common,
+it may be significant (that is, not due to chance) that "a b c" is never seen.
+Perhaps it's not allowed by the rules of the grammar.
+Instead of assigning a more appropriate value of 0,
+the method will back off to the bigram and estimate P(c | b), which may be too high.
+
+Wikipedia provides a good explanation for equations to be used later:
+
+[https://en.wikipedia.org/wiki/Katz%27s_back-off_model](https://en.wikipedia.org/wiki/Katz%27s_back-off_model)
+
+```{r}
+library(edgeR)
+library(plyr)
+
+GoodTuringProportions <- function(frequency){
+  goodTuringProportions(frequency)[,1]
+}
+
+GoodTuringAlpha <- function(frequency){
+  goodTuring(frequency)$P0
+}
+```
+
+Calculate the P_ml for unigrams.
+P_ml is the probability calculated using the maximum likelihood estimation.
+
+```{r}
+ngram.1 <- ngram.1 %>% 
+  mutate(p_ml = Freq/sum(Freq), P_bo = p_ml)
+```
+
+For bigrams, trigrams and fourgrams, we need to calculate back-off probabilities by group and α,
+α is the probability estimated combined proportion of all undetected species by group.
+
+
+```{r}
+ngram.2 <- ngram.2 %>%
+  dplyr::group_by(Wordone) %>%
+  dplyr::mutate(p_ml = Freq/sum(Freq), P_bo = GoodTuringProportions(Freq), 
+                alpha = GoodTuringAlpha(Freq)) %>%
+  dplyr::arrange(Wordone, desc(Freq)) %>%
+  dplyr::ungroup()
+
+ngram.3 <- ngram.3 %>%
+  dplyr::group_by(Wordone, Wordtwo) %>%
+  dplyr::mutate(p_ml = Freq/sum(Freq), P_bo = GoodTuringProportions(Freq), 
+                alpha = GoodTuringAlpha(Freq)) %>%
+  dplyr::arrange(Wordone, Wordtwo, desc(Freq)) %>%
+  dplyr::ungroup()
+
+ngram.4 <- ngram.4 %>%
+  dplyr::group_by(Wordone, Wordtwo, Wordthree) %>%
+  dplyr::mutate(p_ml = Freq/sum(Freq), P_bo = GoodTuringProportions(Freq), 
+                alpha = GoodTuringAlpha(Freq)) %>%
+  dplyr::arrange(Wordone, Wordtwo, Wordthree, desc(Freq)) %>%
+  dplyr::ungroup()
+```
+
+```{r}
+katz.backoff.ngram.1.search <- function(unigram = ngram.1, remove_words = NULL){
+  ngram.1.f <- unigram %>% # return words with their P_bo and sum P_bo depending on unigram
+    filter(!(Word %in% remove_words)) 
+  
+  if(!("P_bo_sum" %in% names(unigram)))
+    ngram.1.f <- ngram.1.f %>% 
+      mutate(P_bo_sum = sum(P_bo))
+  
+  ngram.1.f
+}
+
+katz.backoff.ngram.2.search <- function(word1, bigram = ngram.2,  remove_words = NULL){
+  
+  # We filter ngram.2 to include only bigrams such that wordone is the text_input
+  ngram.2.f <- bigram %>% 
+    filter(!(Wordtwo %in% remove_words)) %>%
+    filter(Wordone == word1)
+  
+  if(nrow(ngram.2.f) > 0){
+    alpha.2 <- ngram.2.f$alpha[1]
+  } else{
+    alpha.2 <- 1
+  } 
+  
+  # We add the discounted probability (backoff probability) c*/c to the bigram words (k>0)
+  ngram.2.f <- ngram.2.f %>% 
+    filter(!(is.na(P_bo) & Freq == 1)) %>%
+    mutate(P_bo = ifelse(is.na(P_bo) & Freq > 1, p_ml, P_bo))
+  
+  # We filter ngram.1 to include only Words that don't appear as Wordtwo in the filtered bigrams
+  remove_words <- c(remove_words, as.character(ngram.2.f$Wordtwo))
+  
+  ngram.1.f <- katz.backoff.ngram.1.search(remove_words = remove_words) %>%
+    mutate(P_bo = alpha.2*(P_bo/P_bo_sum)) %>%
+    dplyr::rename(Wordtwo = Word)
+  
+  ngram.2.f <- rbind.fill(ngram.2.f, ngram.1.f) %>%
+    arrange(desc(P_bo)) 
+  
+  if(!("P_bo_sum" %in% names(bigram)))
+    ngram.2.f <- ngram.2.f %>% 
+    mutate(P_bo_sum = sum(P_bo))
+  
+  ngram.2.f
+}
+
+
+
+katz.backoff.ngram.3.search <- function(word1, word2, trigram = ngram.3, remove_words = NULL) {
+  
+  ngram.3.f <- trigram %>% 
+    filter(!(Wordthree %in% remove_words)) %>%
+    filter(Wordone == word1, Wordtwo == word2)
+  
+  if(nrow(ngram.3.f) > 0){
+    alpha.3 <- ngram.3.f$alpha[1]
+  } else{
+    alpha.3 <- 1
+  }
+  
+  ngram.3.f <- ngram.3.f %>% 
+    filter(!(is.na(P_bo) & Freq == 1)) %>%
+    mutate(P_bo = ifelse(is.na(P_bo) & Freq > 1, p_ml, P_bo))
+  
+  # If all trigrams have the same count with n=1, the assocaited P_bo will be NA, 
+  # the probability estimated combined proportion of all undetected species is 1
+  # these elements should be filtered, so that they are not removeed from the bigrams
+  
+  # If all trigrams have the same count with n>1, the assocaited P_bo will be NA, 
+  # the probability estimated combined proportion of all undetected species is 0
+  # P_bo should be then replaced with p_ml
+  
+  remove_words <- c(remove_words, as.character(ngram.3.f$Wordthree))
+  
+  ngram.2.f <- katz.backoff.ngram.2.search(word2, remove_words = remove_words) %>%
+    mutate(P_bo = alpha.3*(P_bo/P_bo_sum)) %>%
+    dplyr::rename(Wordthree = Wordtwo, Wordtwo = Wordone)
+  
+  
+  ngram.3.f <- rbind.fill(ngram.3.f, ngram.2.f) %>%
+    arrange(desc(P_bo)) 
+
+  if(!("P_bo_sum" %in% names(trigram)))
+    ngram.3.f <- ngram.3.f %>% 
+    mutate(P_bo_sum = sum(P_bo))
+  
+  ngram.3.f
+}
+  
+
+katz.backoff.ngram.4.search <- function(word1, word2, word3, fourgram = ngram.4, remove_words = NULL) {
+  
+  ngram.4.f <- fourgram %>% 
+    filter(!(Wordfour %in% remove_words)) %>%
+    filter(Wordone == word1, Wordtwo == word2, Wordthree == word3)
+  
+  if(nrow(ngram.4.f) > 0){
+    alpha.4 <- ngram.4.f$alpha[1]
+  } else{
+    alpha.4 <- 1
+  }
+  
+  ngram.4.f <- ngram.4.f %>%
+    filter(!(is.na(P_bo) & Freq == 1)) %>%
+    mutate(P_bo = ifelse(is.na(P_bo) & Freq > 1, p_ml, P_bo))
+  
+  remove_words <- c(remove_words, as.character(ngram.4.f$Wordfour))
+  
+  ngram.3.f <- katz.backoff.ngram.3.search(word2, word3,  remove_words = remove_words) %>%
+    mutate(P_bo = alpha.4*(P_bo/P_bo_sum)) %>%
+    dplyr::rename(Wordfour = Wordthree, Wordthree = Wordtwo, Wordtwo = Wordone)
+  
+  ngram.4.f <- rbind.fill(ngram.4.f, ngram.3.f) %>%
+    arrange(desc(P_bo)) 
+  
+  if(!("P_bo_sum" %in% names(fourgram)))
+    ngram.4.f <- ngram.4.f %>% 
+      mutate(P_bo_sum = sum(P_bo))
+
+  ngram.4.f
+}
+
+
+Katz_Predictor <- function(text_input) {
+  
+  # if(nchar(text_input) > 0) {
+    
+    corpus_input <- VCorpus(VectorSource(text_input))
+    
+    corpus_input<-tm_map(corpus_input, removeNumbers)
+    
+    corpus_input<-tm_map(corpus_input, removePunctuation, preserve_intra_word_dashes = TRUE)
+    
+    corpus_input<-tm_map(corpus_input, content_transformer(tolower))
+    
+    text_input <- sapply(corpus_input, as.character)
+    
+    text_input_list = strsplit(text_input, " ")[[1]]
+    
+    if(length(text_input_list) == 0){
+      
+      next_words <- katz.backoff.ngram.1.search() %>%
+        select(Word) %>% 
+        filter(row_number() <= 5)
+      
+      next_words <- next_words$Word
+    }
+    
+    if(length(text_input_list) == 1){
+
+      next_words <- katz.backoff.ngram.2.search(text_input_list[1]) %>%
+        select(Wordtwo) %>% 
+        filter(row_number() <= 5)
+      
+      next_words <- next_words$Wordtwo
+    }
+    
+    if(length(text_input_list) == 2){
+      
+      next_words <- katz.backoff.ngram.3.search(text_input_list[1], text_input_list[2]) %>%
+        select(Wordthree) %>% 
+        filter(row_number() <= 5)
+      
+      next_words <- next_words$Wordthree
+    }
+    
+    if(length(text_input_list) >= 3){
+      
+      n = length(text_input_list)
+      
+      next_words <- katz.backoff.ngram.4.search(text_input_list[n-2], text_input_list[n-1], text_input_list[n]) %>%
+        select(Wordfour) %>% 
+        filter(row_number() <= 5)
+      
+      next_words <- next_words$Wordfour
+      }
+   return(as.character(next_words)) 
+  # }
+}
+
+# dir.create("KatzBackOffModel")
+# 
+# save(ngram.1, ngram.2, ngram.3, ngram.4, file = "KatzBackOffModel/data.Rdata")
+# 
+# dump(list = c("Katz_Predictor", "katz.backoff.ngram.1.search", "katz.backoff.ngram.2.search", "katz.backoff.ngram.3.search", "katz.backoff.ngram.4.search"), file = "KatzBackOffModel/Predictor.R")
+
+```
+
+
+### Examples
+
+```{r}
+Katz_Predictor("you are so")
+Katz_Predictor("a lot of")
+Katz_Predictor("one of the")
+Katz_Predictor("out of the")
+Katz_Predictor("as well as")
+Katz_Predictor("going to be")
+Katz_Predictor("the united states")
+Katz_Predictor("thanks for the")
+Katz_Predictor("it would be")
+Katz_Predictor("some of the")
+```
+
+# Optimized Katz's BackOff Model
+
+We then keep only the first 5 rows of a group as we will not predict more than 5 words.
+This will significantly reduce the size of the used sets of prediction.
+
+In this model, there is a simple approximation used:
+
+${\sum _{{\{w_{i}:C(w_{{i-n+1}}\cdots w_{{i}})\leq k\}}}P_{{bo}}(w_{i}\mid w_{{i-n+2}}\cdots w_{{i-1}})}$ is substitued byn${\sum _{{w_{i}}P_{{bo}}(w_{i}\mid w_{{i-n+2}}\cdots w_{{i-1}})}}$.
+
+∑ P_bo is used over all words instead of ∑ P_bo such that C <= k. 
+
+```{r}
+ngram.1.sample <- ngram.1 %>% 
+  mutate(P_bo_sum = sum(P_bo)) %>%
+  dplyr::filter(row_number() <= 5)
+
+ngram.2.sample <- ngram.2 %>%
+  dplyr::group_by(Wordone) %>%
+  dplyr::mutate(P_bo_sum = sum(P_bo)) %>%
+  dplyr::arrange(Wordone, desc(Freq)) %>%
+  dplyr::filter(row_number() <= 5) %>%
+  dplyr::ungroup()
+
+ngram.3.sample <- ngram.3 %>%
+  dplyr::group_by(Wordone, Wordtwo) %>%
+  dplyr::mutate(P_bo_sum = sum(P_bo)) %>%
+  dplyr::arrange(Wordone, Wordtwo, desc(Freq)) %>%
+  dplyr::filter(row_number() <= 5) %>%
+  dplyr::ungroup()
+
+ngram.4.sample <- ngram.4 %>%
+  dplyr::group_by(Wordone, Wordtwo, Wordthree) %>%
+  dplyr::mutate(P_bo_sum = sum(P_bo)) %>%
+  dplyr::arrange(Wordone, Wordtwo, Wordthree, desc(Freq)) %>%
+  dplyr::filter(row_number() <= 5) %>%
+  dplyr::ungroup()
+
+
+katz.backoff.ngram.1.search <- function(unigram = ngram.1.sample, remove_words = NULL){
+  ngram.1.f <- unigram %>% # return words with their P_bo and sum P_bo depending on unigram
+    filter(!(Word %in% remove_words)) 
+  
+  if(!("P_bo_sum" %in% names(unigram)))
+    ngram.1.f <- ngram.1.f %>% 
+      mutate(P_bo_sum = sum(P_bo))
+  
+  ngram.1.f
+}
+
+katz.backoff.ngram.2.search <- function(word1, bigram = ngram.2.sample,  remove_words = NULL){
+  
+  # We filter ngram.2 to include only bigrams such that wordone is the text_input
+  ngram.2.f <- bigram %>% 
+    filter(!(Wordtwo %in% remove_words)) %>%
+    filter(Wordone == word1)
+  
+  if(nrow(ngram.2.f) > 0){
+    alpha.2 <- ngram.2.f$alpha[1]
+  } else{
+    alpha.2 <- 1
+  } 
+  
+  # We add the discounted probability (backoff probability) c*/c to the bigram words (k>0)
+  ngram.2.f <- ngram.2.f %>% 
+    filter(!(is.na(P_bo) & Freq == 1)) %>%
+    mutate(P_bo = ifelse(is.na(P_bo) & Freq > 1, p_ml, P_bo))
+  
+  # We filter ngram.1 to include only Words that don't appear as Wordtwo in the filtered bigrams
+  remove_words <- c(remove_words, as.character(ngram.2.f$Wordtwo))
+  
+  ngram.1.f <- katz.backoff.ngram.1.search(remove_words = remove_words) %>%
+    mutate(P_bo = alpha.2*(P_bo/P_bo_sum)) %>%
+    dplyr::rename(Wordtwo = Word)
+  
+  ngram.2.f <- rbind.fill(ngram.2.f, ngram.1.f) %>%
+    arrange(desc(P_bo)) 
+  
+  if(!("P_bo_sum" %in% names(bigram)))
+    ngram.2.f <- ngram.2.f %>% 
+    mutate(P_bo_sum = sum(P_bo))
+  
+  ngram.2.f
+}
+
+
+
+katz.backoff.ngram.3.search <- function(word1, word2, trigram = ngram.3.sample, remove_words = NULL) {
+  
+  ngram.3.f <- trigram %>% 
+    filter(!(Wordthree %in% remove_words)) %>%
+    filter(Wordone == word1, Wordtwo == word2)
+  
+  if(nrow(ngram.3.f) > 0){
+    alpha.3 <- ngram.3.f$alpha[1]
+  } else{
+    alpha.3 <- 1
+  }
+  
+  ngram.3.f <- ngram.3.f %>% 
+    filter(!(is.na(P_bo) & Freq == 1)) %>%
+    mutate(P_bo = ifelse(is.na(P_bo) & Freq > 1, p_ml, P_bo))
+  
+  # If all trigrams have the same count with n=1, the assocaited P_bo will be NA, 
+  # the probability estimated combined proportion of all undetected species is 1
+  # these elements should be filtered, so that they are not removeed from the bigrams
+  
+  # If all trigrams have the same count with n>1, the assocaited P_bo will be NA, 
+  # the probability estimated combined proportion of all undetected species is 0
+  # P_bo should be then replaced with p_ml
+  
+  remove_words <- c(remove_words, as.character(ngram.3.f$Wordthree))
+  
+  ngram.2.f <- katz.backoff.ngram.2.search(word2, remove_words = remove_words) %>%
+    mutate(P_bo = alpha.3*(P_bo/P_bo_sum)) %>%
+    dplyr::rename(Wordthree = Wordtwo, Wordtwo = Wordone)
+  
+  
+  ngram.3.f <- rbind.fill(ngram.3.f, ngram.2.f) %>%
+    arrange(desc(P_bo)) 
+  
+  if(!("P_bo_sum" %in% names(trigram)))
+    ngram.3.f <- ngram.3.f %>% 
+    mutate(P_bo_sum = sum(P_bo))
+  
+  ngram.3.f
+}
+
+
+katz.backoff.ngram.4.search <- function(word1, word2, word3, fourgram = ngram.4.sample, remove_words = NULL) {
+  
+  ngram.4.f <- fourgram %>% 
+    filter(!(Wordfour %in% remove_words)) %>%
+    filter(Wordone == word1, Wordtwo == word2, Wordthree == word3)
+  
+  if(nrow(ngram.4.f) > 0){
+    alpha.4 <- ngram.4.f$alpha[1]
+  } else{
+    alpha.4 <- 1
+  }
+  
+  ngram.4.f <- ngram.4.f %>%
+    filter(!(is.na(P_bo) & Freq == 1)) %>%
+    mutate(P_bo = ifelse(is.na(P_bo) & Freq > 1, p_ml, P_bo))
+  
+  remove_words <- c(remove_words, as.character(ngram.4.f$Wordfour))
+  
+  ngram.3.f <- katz.backoff.ngram.3.search(word2, word3,  remove_words = remove_words) %>%
+    mutate(P_bo = alpha.4*(P_bo/P_bo_sum)) %>%
+    dplyr::rename(Wordfour = Wordthree, Wordthree = Wordtwo, Wordtwo = Wordone)
+  
+  ngram.4.f <- rbind.fill(ngram.4.f, ngram.3.f) %>%
+    arrange(desc(P_bo)) 
+  
+  if(!("P_bo_sum" %in% names(fourgram)))
+    ngram.4.f <- ngram.4.f %>% 
+    mutate(P_bo_sum = sum(P_bo))
+  
+  ngram.4.f
+}
+
+
+
+Katz_Predictor <- function(text_input) {
+  
+  # if(nchar(text_input) > 0) {
+  
+  corpus_input <- VCorpus(VectorSource(text_input))
+  
+  corpus_input<-tm_map(corpus_input, removeNumbers)
+  
+  corpus_input<-tm_map(corpus_input, removePunctuation, preserve_intra_word_dashes = TRUE)
+  
+  corpus_input<-tm_map(corpus_input, content_transformer(tolower))
+  
+  text_input <- sapply(corpus_input, as.character)
+  
+  text_input_list = strsplit(text_input, " ")[[1]]
+  
+  if(length(text_input_list) == 0){
+    
+    next_words <- katz.backoff.ngram.1.search() %>%
+      select(Word) %>% 
+      filter(row_number() <= 5)
+    
+    next_words <- next_words$Word
+  }
+  
+  if(length(text_input_list) == 1){
+    
+    next_words <- katz.backoff.ngram.2.search(text_input_list[1]) %>%
+      select(Wordtwo) %>% 
+      filter(row_number() <= 5)
+    
+    next_words <- next_words$Wordtwo
+  }
+  
+  if(length(text_input_list) == 2){
+    
+    next_words <- katz.backoff.ngram.3.search(text_input_list[1], text_input_list[2]) %>%
+      select(Wordthree) %>% 
+      filter(row_number() <= 5)
+    
+    next_words <- next_words$Wordthree
+  }
+  
+  if(length(text_input_list) >= 3){
+    
+    n = length(text_input_list)
+    
+    next_words <- katz.backoff.ngram.4.search(text_input_list[n-2], text_input_list[n-1], text_input_list[n]) %>%
+      select(Wordfour) %>% 
+      filter(row_number() <= 5)
+    
+    next_words <- next_words$Wordfour
+  }
+  return(as.character(next_words)) 
+  # }
+}
+
+# dir.create("KatzBackOffModelOptimized")
+# 
+# save(ngram.1.sample, ngram.2.sample, ngram.3.sample, ngram.4.sample, file = "KatzBackOffModelOptimized/data.Rdata")
+# 
+# dump(list = c("Katz_Predictor", "katz.backoff.ngram.1.search", "katz.backoff.ngram.2.search", "katz.backoff.ngram.3.search", "katz.backoff.ngram.4.search"), file = "KatzBackOffModelOptimized/Predictor.R")
+```
+
+
+```{r}
+Katz_Predictor("you are so")
+Katz_Predictor("a lot of")
+Katz_Predictor("one of the")
+Katz_Predictor("out of the")
+Katz_Predictor("as well as")
+Katz_Predictor("going to be")
+Katz_Predictor("the united states")
+Katz_Predictor("thanks for the")
+Katz_Predictor("it would be")
+Katz_Predictor("some of the")
+```
+
+# Model Evaluation of Katz Backoff model
+
+When calculating P_bo in katz.backoff.ngram.i.search (i = 1:4), we are actually calculating the probability of all
+possible combinations of ngrams and then selecting the top 5.
+We can use these functions to find probabilities
+
+Ex: to find pr(w_3|w_2,w_1), we find using katz.backoff.ngram.3.search all combinations of w_1, w_2 and w (w list of all words)
+and then filter to find pr(w_3|w_2,w_1)
+
+probability of a sentence s
+in a 4 gram model
+pr(s) = pr(w_1)pr(w_2|w_1)pr(w_3|w_1,w_2)pr(w_4|w_1,w_2,w_3)pr(w_5|w_2,w_3,w_4) ...
+
+Note: we can't evaluate our simple backoff model since we don't have associated probabilities
+
+if we have a sentence $s$ that contains nn words, its perplexity $Perplexity(s)$ is:
+$\Perplexity(s) = \sqrt[n]{\frac{1}{p(w_1^n)}}$
+
+If we want to know the perplexity of the whole corpus $C$ that contains $m$ sentences and $N$ words,
+we have to find out how well the model can predict all the sentences together.
+So, let the sentences $(s_1,s_2,...,s_m)$ be part of $C$ The perplexity of the corpus, per word, is given by:
+
+$\Perplexity(C) = \sqrt[N]{\frac{1}{P(s_1,s_2,...,s_m)}}$
+
+The probability of all those sentences being together in the corpus $C$ (if we consider them as independent) is:
+
+$P(s_1,...,s_m) =  \prod_{i=1}^{m} p(s_{i})$ #
+
+The probability of a sentence appear in a corpus, in a ngram model, is given by
+$p(s)=\prod_{i=1}^{n}p(w_i|w_{i-n+1}^{i-1})$, where $p(w_i)$ is the probability of the word $w_i$ occurs.
+
+Since probabilities are given as a real number between 0 and 1,
+the product $\prod_{i=1}^{m} p(s_{i})$ gets small quickly, and you can have an error in some computer systems
+(underflow). So, we can use the following transformations to replace the multiplications by additions:
+
+$ \begin{align}
+\Perplexity(C) &= \sqrt[N]{\frac{1}{\prod_{i=1}^{m} p(s_{i})}}  \\
+&= 2^{\log_{2}{[\prod_{i=1}^{m} p(s_{i})]}^{-N}}  \\
+&= 2^{-\frac{1}{N}\log_{2}{[\prod_{i=1}^{m} p(s_{i})]}}  \\
+&= 2^{-\frac{1}{N}\sum_{i=1}^{m}\log_{2}{p(s_i)}}
+\end{align}$
+
+```{r}
+perplexity <- function(C) {
+  N <- sum(generateNgramData(1, C)$Freq) # total number of words in the corpus
+  m <- length(C) # number of sentences in the corpus
+  
+  # many of the sentences are
+  probability_vector <- sapply(C, s_probability, USE.NAMES = FALSE)
+  
+  # update N to include only sentences that contain non-unique words that didn't occur in train.df (prob = 0)
+  N <- sum(probability_vector != 0)
+  
+  probability_vector <- probability_vector[probability_vector != 0]
+  
+  perplexity <- 2^-(1/N*sum(log2(probability_vector)))
+  perplexity
+}
+
+s_probability <- function(s){
+  if(nchar(s) > 0) {
+    
+    s_ngrams <- c(NGramTokenizer(s, Weka_control(min=1, max=1))[1], 
+                  NGramTokenizer(s, Weka_control(min=2, max=2))[1], 
+                  NGramTokenizer(s, Weka_control(min=3, max=3))[1], 
+                  NGramTokenizer(s, Weka_control(min=4, max=4)))
+    
+    s_ngrams <- s_ngrams[!is.na(s_ngrams)]
+    
+    return(prod(sapply(s_ngrams, wc_probability)))
+  }
+}
+
+# conditional probabilities of the ngrams in the sentence
+
+wc_probability <- function(s_ngram) {
+  
+  s_ngram_list = strsplit(s_ngram, " ")[[1]]
+  
+  if(length(s_ngram_list) == 1)
+    pr <- katz.backoff.ngram.1.probability(s_ngram_list[1])
+  
+  if(length(s_ngram_list) == 2)
+    pr <- katz.backoff.ngram.2.probability(s_ngram_list[1], s_ngram_list[2])
+  
+  if(length(s_ngram_list) == 3)
+    pr <- katz.backoff.ngram.3.probability(s_ngram_list[1], s_ngram_list[2], s_ngram_list[3])
+  
+  if(length(s_ngram_list) == 4)
+    pr <- katz.backoff.ngram.4.probability(s_ngram_list[1], s_ngram_list[2], s_ngram_list[3], s_ngram_list[4])
+  
+  pr
+  
+}
+
+
+katz.backoff.ngram.1.probability <- function(word){
+  pr <- katz.backoff.ngram.1.search() %>%
+    filter(Word == word) %>%
+    select(P_bo)
+  
+  pr <- pr$P_bo
+  
+  if(length(pr) == 0)
+    pr <-0
+  
+  pr
+}
+
+# pr(w_2|w_1)
+
+katz.backoff.ngram.2.probability <- function(word1, word2){
+  # Using katz.backoff.ngram.2.search(word1), we can find all the possible word2 that follows word1 with there corresponding probabilities
+  # The size of katz.backoff.ngram.2.search(word1) should always be the same which is equal to the total number of possible words in the training set
+  
+  pr <- katz.backoff.ngram.2.search(word1) %>%
+    filter(Wordtwo == word2) %>%
+    select(P_bo)
+  
+  pr <- pr$P_bo
+  
+  if(length(pr) == 0)
+    pr <-0
+  
+  pr
+}
+
+
+katz.backoff.ngram.3.probability <- function(word1, word2, word3){
+  # Using katz.backoff.ngram.2.search(word1), we can find all the possible word2 that follows word1 with there corresponding probabilities
+  # The size of katz.backoff.ngram.2.search(word1) should always be the same which is equal to the total number of possible words in the training set
+  
+  pr <- katz.backoff.ngram.3.search(word1, word2) %>%
+    filter(Wordthree == word3) %>%
+    select(P_bo)
+  
+  pr <- pr$P_bo
+  
+  if(length(pr) == 0)
+    pr <-0
+  
+  pr
+}
+
+
+katz.backoff.ngram.4.probability <- function(word1, word2, word3, word4){
+  # Using katz.backoff.ngram.2.search(word1), we can find all the possible word2 that follows word1 with there corresponding probabilities
+  # The size of katz.backoff.ngram.2.search(word1) should always be the same which is equal to the total number of possible words in the training set
+  
+  pr <- katz.backoff.ngram.4.search(word1, word2, word3) %>%
+    filter(Wordfour == word4) %>%
+    select(P_bo)
+  
+  pr <- pr$P_bo
+  
+  if(length(pr) == 0)
+    pr <-0
+  
+  pr
+}
+```
+
+### Example of conditional probabilities
+
+```{r}
+Katz_Predictor("some of the")
+
+s_probability("some of the other")
+s_probability("some of the money")
+s_probability("some of the things")
+s_probability("some of the time")
+s_probability("some of the nations")
+```
+
+
+
+# Evaluation and comparison of all Models 
+
+Perplexity is theoretically elegant
+as its logarithm is an upper bound on the number of bits per word
+expected in compressing (in-domain) text employing the measured
+model. Unfortunately, while language models with lower perplexities
+tend to have lower word-error rates, there have been numerous
+examples in the literature where language models providing a large
+improvement in perplexity over a baseline model have yielded little
+or no improvement in word-error rate. In addition, perplexity
+is inapplicable to unnormalized language models (i.e., models that
+are not true probability distributions that sum to 1), and perplexity
+is not comparable between language models with different vocabularies.
+
+In our example, the simple backoff model we built is not a true probability distribution.
+And the vocabulary of the test set and the train set is not really exactly the same.
+We might have some words that appeared in the test set which didnot appear in the training set.
+
+We'll try and build a very simple evaluation model.
+In our model, we try and predict the next word by giving 5 choices.
+Using our model, we can calculate the percentage of times the next word is found among these choices.
+
+```{r}
+# Remove and clean all memory
+rm(list = ls())
+gc()
+
+library(dplyr)
+library(tm)
+library(plyr)
+library(stringr)
+library(readr)
+library(RWeka)
+
+s_probability <- function(s){
+  if(nchar(s) > 0) {
+    s_ngrams <- c(NGramTokenizer(s, Weka_control(min=1, max=1))[1], 
+    NGramTokenizer(s, Weka_control(min=2, max=2))[1], 
+    NGramTokenizer(s, Weka_control(min=3, max=3))[1], 
+    NGramTokenizer(s, Weka_control(min=4, max=4)))
+    
+    s_ngrams <- s_ngrams[!is.na(s_ngrams)]
+    
+    return(mean(sapply(s_ngrams, wc_probability, USE.NAMES = FALSE)))
+  } else {
+    return(NA)
+  }
+    
+}
+
+wc_probability <- function(s_ngram) {
+  
+  last_word <- word(s_ngram, -1)
+  input_text <- word(s_ngram, 1, -2)
+  
+  choices <- Predictor(input_text)
+  
+  if(last_word %in% choices) {
+    return(1) 
+  } else {
+    return(0)
+  }
+    
+}
+
+testset <- readLines('final/testset.txt')
+
+ModelPerformance <- data.frame(Model = character(), LoadTime = numeric(), AvgPredictionTime = numeric(), AvgScore = numeric(), ModelSize = character())
+
+Examples <-c("you are so", "a lot of", "one of the", "out of the", "as well as", "going to be", 
+             "the united states", "thanks for the", "it would be", "some of the")
+
+
+
+for(file in list.files(pattern = "Model")){
+  ## Calculating loading time
+  load.time.start <- Sys.time()
+  load(file = paste0(file, "/data.Rdata"))
+  source(file = paste0(file, "/Predictor.R"))
+  load.time <- Sys.time() - load.time.start
+  
+  if(!existsFunction("Predictor")) {
+    Predictor <- Katz_Predictor
+    rm(Katz_Predictor)
+  }
+  
+  ## Calculating average prediction time
+  pred.time.start <- Sys.time()
+  sapply(Examples, Predictor)
+  pred.time <- Sys.time() - pred.time.start
+  pred.time <- pred.time/length(Examples)
+  
+  objects.size <- sapply(ls()[grepl("^ngram", ls())],function(x){format(object.size(get(x)), units = "Mb")})
+  objects.size <- paste0(sum(parse_number(objects.size)), units = " Mb")
+  
+  # testset is already shuffled
+  # let's use only 10 lines for now, as it takes too much time
+  
+  score <- mean(sapply(testset[1:10], s_probability), na.rm = T)
+  
+  ModelPerformance <- rbind(ModelPerformance, data.frame(Model = file, LoadTime = load.time, AvgPredictionTime = pred.time, AvgScore = score, ModelSize = objects.size))
+  
+  rm(list=setdiff(ls(), c("ModelPerformance", "Examples", "testset", "s_probability", "wc_probability")))
+  gc()
+}
+
+knitr:kable(ModelPerformance)
+```
+
+

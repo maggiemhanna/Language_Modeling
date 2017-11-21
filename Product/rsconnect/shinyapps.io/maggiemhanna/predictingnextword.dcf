@@ -1,0 +1,12 @@
+name: predictingnextword
+title: PredictingNextWord
+username:
+account: maggiemhanna
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 238000
+bundleId: 1087535
+url: https://maggiemhanna.shinyapps.io/predictingnextword/
+when: 1511256915.44271
+asMultiple: FALSE
+asStatic: FALSE
